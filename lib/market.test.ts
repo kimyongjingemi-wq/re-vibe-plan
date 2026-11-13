@@ -8,6 +8,8 @@ import {
   marketMargin,
   normalizeName,
   parseRtmsXml,
+  leafRegions,
+  matchRegion,
   pickOur84,
   pickSggCandidates,
   premiumTable,
@@ -175,4 +177,34 @@ test("우리 84㎡ 주택형 고르기", () => {
     { name: "84㎡", exclusiveM2: 84.9, supplyPyeong: 34.6 },
   ]);
   assert.equal(t?.supplyPyeong, 34.6);
+});
+
+// ───────────── 시군구 확인 (앱 안의 코드표) ─────────────
+import { SGG_ROWS } from "./regions-data.ts";
+
+const LEAVES = leafRegions(SGG_ROWS.map(([code5, name]) => ({ code5, name })));
+const codes = (q: string) => matchRegion(LEAVES, q).map((c) => c.code5);
+
+test("시군구 코드표: 샘플 A·B·C 지역과 특별자치시·도가 들어 있다", () => {
+  assert.deepEqual(codes("부산광역시 해운대구"), ["26350"]);
+  assert.deepEqual(codes("경기도 수원시 영통구"), ["41117"]);
+  assert.deepEqual(codes("대전광역시 유성구"), ["30200"]);
+  assert.deepEqual(codes("세종특별자치시"), ["36110"]);
+  assert.deepEqual(codes("강원특별자치도 춘천시"), ["51110"]);
+});
+
+test("주소 찾기: 줄임말 · 시도 생략 · 동/지번까지 쓴 주소", () => {
+  assert.deepEqual(codes("부산 해운대구"), ["26350"]);
+  assert.deepEqual(codes("해운대구"), ["26350"]);
+  assert.deepEqual(codes("수원시 영통구"), ["41117"]);
+  assert.deepEqual(codes("부산광역시 해운대구 우동 1408"), ["26350"]);
+  assert.deepEqual(codes("서울특별시 강남구 역삼동 123-4"), ["11680"]);
+  assert.deepEqual(codes("세종시 한솔동"), ["36110"]);
+  assert.deepEqual(codes("강원도 춘천시"), ["51110"]);
+});
+
+test("주소 찾기: 위 단계만 쓰면 아래 시군구 후보 여럿, 이름이 겹치면 후보 여럿, 없으면 빈 배열", () => {
+  assert.deepEqual(codes("경기도 수원시"), ["41111", "41113", "41115", "41117"]);
+  assert.ok(codes("중구").length >= 5); // 서울 · 부산 · 대구 · 인천 · 대전 · 울산 중구
+  assert.deepEqual(codes("없는시 없는구"), []);
 });

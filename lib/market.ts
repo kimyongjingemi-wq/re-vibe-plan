@@ -107,6 +107,47 @@ export function pickSggCandidates(rows: StanReginRow[], q: string): RegionCandid
   return exact.length > 0 ? exact : leaves;
 }
 
+/** 시도 줄임말 · 옛 이름 → 지금 쓰는 시도 전체 이름 */
+const SIDO_ALIAS: Record<string, string> = {
+  서울: "서울특별시", 서울시: "서울특별시", 부산: "부산광역시", 부산시: "부산광역시", 대구: "대구광역시", 대구시: "대구광역시",
+  인천: "인천광역시", 인천시: "인천광역시", 광주: "광주광역시", 광주시: "광주광역시", 대전: "대전광역시", 대전시: "대전광역시",
+  울산: "울산광역시", 울산시: "울산광역시", 세종: "세종특별자치시", 세종시: "세종특별자치시", 경기: "경기도",
+  강원: "강원특별자치도", 강원도: "강원특별자치도", 충북: "충청북도", 충남: "충청남도",
+  전북: "전북특별자치도", 전라북도: "전북특별자치도", 전남: "전라남도", 경북: "경상북도", 경남: "경상남도",
+  제주: "제주특별자치도", 제주도: "제주특별자치도",
+};
+
+/**
+ * 시군구 표에서 실거래 조회에 쓸 '맨 아래' 시군구만 남긴다.
+ * 아래에 구가 있는 시(예: 경기도 수원시)는 뺀다 — 실거래는 구 코드로만 나오기 때문.
+ */
+export function leafRegions(all: RegionCandidate[]): RegionCandidate[] {
+  return all.filter((c) => !all.some((o) => o !== c && o.name.startsWith(`${c.name} `)));
+}
+
+/**
+ * 입력한 주소에서 시군구를 찾는다 (leaves = leafRegions 결과).
+ * - "부산 해운대구"처럼 시도를 줄여 써도, "해운대구" · "수원시 영통구"처럼 시도를 빼도 된다.
+ * - "부산광역시 해운대구 우동 1408"처럼 동 · 지번까지 써도 앞쪽 시군구까지만 본다.
+ * - "경기도 수원시"처럼 위 단계만 쓰면 그 아래 시군구를 모두 후보로 돌려준다(하나를 고르게 한다).
+ * 앞에서부터 가장 많은 낱말이 맞는 경우를 고른다. 못 찾으면 빈 배열.
+ */
+export function matchRegion(leaves: RegionCandidate[], q: string): RegionCandidate[] {
+  const words = q.replace(/[,()]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  if (SIDO_ALIAS[words[0]]) words[0] = SIDO_ALIAS[words[0]];
+  for (let k = Math.min(words.length, 4); k >= 1; k--) {
+    const p = words.slice(0, k).join(" ");
+    const exact = leaves.filter((c) => c.name === p);
+    if (exact.length > 0) return exact;
+    const tail = leaves.filter((c) => c.name.endsWith(` ${p}`));
+    if (tail.length > 0) return tail;
+    const below = leaves.filter((c) => c.name.startsWith(`${p} `));
+    if (below.length > 0) return below;
+  }
+  return [];
+}
+
 // ───────────── 응답 파싱 ─────────────
 
 /** 숫자 문자열("142,840", " 84.99 ")을 숫자로. 빈 값 · 숫자가 아니면 null */

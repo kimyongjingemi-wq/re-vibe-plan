@@ -190,7 +190,7 @@ export default function PlanApp() {
   const build = async () => {
     const q = input.site.trim();
     if (!q) {
-      setRegionMsg("사업대상지를 입력하세요 (시도 + 시군구 전체 이름)");
+      setRegionMsg("사업대상지를 입력하세요 (예: 부산광역시 해운대구)");
       return;
     }
     setBusy(true);
@@ -254,7 +254,7 @@ export default function PlanApp() {
           </div>
           <div className="field">
             <label htmlFor="site">
-              사업대상지 <span className="unit">(시도 + 시군구 전체 이름)</span>
+              사업대상지 <span className="unit">(시군구까지 · 동/지번 포함 주소도 가능)</span>
             </label>
             <input id="site" value={input.site} placeholder="예: 부산광역시 해운대구" onChange={(e) => set("site", e.target.value)} />
           </div>

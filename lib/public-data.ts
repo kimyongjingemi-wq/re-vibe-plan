@@ -4,8 +4,10 @@ import "server-only";
 // 주소 · 파라미터는 api_docs/ 기술문서 그대로. 캐시: 법정동코드 30일, 나머지 하루.
 
 import { cacheLife } from "next/cache";
+import { REGIONS_AS_OF, SGG_ROWS } from "./regions-data";
 import {
-  pickSggCandidates,
+  leafRegions,
+  matchRegion,
   parseRtmsXml,
   toCompetitionRow,
   toModelRow,
@@ -17,7 +19,6 @@ import {
   type PresaleDeal,
   type RegionCandidate,
   type RentDeal,
-  type StanReginRow,
   type SubscriptionItem,
 } from "./market";
 
@@ -47,14 +48,22 @@ async function getText(base: string, params: Record<string, string | number>, ke
   const url = new URL(base);
   url.searchParams.set(keyParam, k);
   for (const [n, v] of Object.entries(params)) url.searchParams.set(n, String(v));
-  let res: Response;
-  try {
-    res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new PublicDataError(`공공데이터 연결 실패: ${msg.split(k).join("***")}`);
+  let res: Response | null = null;
+  let text = "";
+  // 초당 요청 제한(429)에 걸리면 잠깐 쉬었다가 두 번까지 다시 부른다
+  for (const wait of [0, 800, 2000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new PublicDataError(`공공데이터 연결 실패: ${msg.split(k).join("***")}`);
+    }
+    text = await res.text();
+    if (res.status !== 429) break;
   }
-  const text = await res.text();
+  if (!res) throw new PublicDataError("공공데이터 연결 실패");
+  if (res.status === 429) throw new PublicDataError("공공데이터 요청이 몰려 잠시 거부됐습니다 — 잠시 후 [다시 시도]를 누르세요", 503);
   if (!res.ok) {
     const hint = res.status === 403 || text.includes("SERVICE_KEY_IS_NOT_REGISTERED") ? " — 해당 API 활용신청이 필요합니다" : "";
     throw new PublicDataError(`공공데이터 응답 오류 HTTP ${res.status}${hint}`);
@@ -67,31 +76,16 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-// ───────────── 법정동코드 (30일 캐시) ─────────────
+// ───────────── 시군구 확인 (앱 안의 법정동코드 표) ─────────────
+// 법정동코드 API는 초당 요청 제한(HTTP 429)에 자주 걸려 조회 전체가 막혔다.
+// 시군구 코드는 거의 바뀌지 않으므로 행정안전부 법정동코드 전체자료로 만든 표(lib/regions-data.ts)를 쓴다.
+// 행정구역이 바뀌면 scripts/build-regions.py로 표를 다시 만든다.
 
-/** 지역 이름으로 시군구 후보를 찾는다. 이름이 정확히 같은 시군구가 있으면 그것만 돌려준다. */
+const LEAVES = leafRegions(SGG_ROWS.map(([code5, name]) => ({ code5, name })));
+
+/** 지역 이름 · 주소로 시군구 후보를 찾는다. 네트워크 호출 없음. fetchedAt = 코드표 기준일 */
 export async function findRegion(q: string): Promise<{ candidates: RegionCandidate[]; fetchedAt: string }> {
-  "use cache";
-  cacheLife({ stale: 86400, revalidate: 86400 * 30, expire: 86400 * 60 });
-  const text = await getText(
-    `${DATA_GO}/1741000/StanReginCd/getStanReginCdList`,
-    { type: "json", pageNo: 1, numOfRows: 1000, flag: "Y", locatadd_nm: q },
-    "ServiceKey",
-  );
-  let j: unknown;
-  try {
-    j = JSON.parse(text);
-  } catch {
-    throw new PublicDataError("법정동코드 응답을 읽지 못했습니다");
-  }
-  const root = (j as { StanReginCd?: unknown[]; RESULT?: { resultCode?: string } }) ?? {};
-  if (!root.StanReginCd) {
-    // INFO-3 데이터 없음 → 후보 없음(오류 아님)
-    if (root.RESULT?.resultCode === "INFO-3") return { candidates: [], fetchedAt: today() };
-    throw new PublicDataError(`법정동코드 오류: ${root.RESULT?.resultCode ?? "알 수 없음"}`);
-  }
-  const rows = (root.StanReginCd[1] as { row?: StanReginRow[] })?.row ?? [];
-  return { candidates: pickSggCandidates(rows, q), fetchedAt: today() };
+  return { candidates: matchRegion(LEAVES, q), fetchedAt: REGIONS_AS_OF };
 }
 
 /** 지역 이름을 시군구 코드 하나로 확인한다. 후보가 없거나 여러 개면 오류. */
@@ -200,14 +194,16 @@ export function errorResponse(e: unknown): Response {
     const err = e as { message: string; status: number };
     return Response.json({ error: scrub(err.message) }, { status: err.status });
   }
-  const msg = e instanceof Error ? scrub(e.message) : "서버 처리 중 오류가 발생했습니다";
+  // 배포판에서는 캐시 함수 안에서 난 오류의 내용이 가려진다("Server Components render") — 알아볼 수 있는 말로 바꾼다
+  const raw = e instanceof Error ? scrub(e.message) : "";
+  const msg = !raw || raw.includes("Server Components render") ? "공공데이터 조회 중 일시 오류가 났습니다 — 잠시 후 [다시 시도]를 누르세요" : raw;
   return Response.json({ error: msg }, { status: 500 });
 }
 
-/** 지역 이름 입력 검사 — 한글 · 숫자 · 공백만, 40자 이내 */
+/** 사업대상지 입력 검사 — 한글 · 숫자 · 공백 · 지번 기호(- , ( ))만, 60자 이내 */
 export function checkArea(area: string | null): string {
   const a = (area ?? "").replace(/\s+/g, " ").trim();
-  if (!a || a.length > 40 || !/^[가-힣0-9 ]+$/.test(a)) throw new PublicDataError("사업대상지 이름을 확인하세요 (예: 부산광역시 해운대구)", 400);
+  if (!a || a.length > 60 || !/^[가-힣0-9 \-,()]+$/.test(a)) throw new PublicDataError("사업대상지 주소를 확인하세요 (예: 부산광역시 해운대구)", 400);
   return a;
 }
 
